@@ -4,10 +4,10 @@ import { NgFor, NgIf } from '@angular/common';
 import { ReviewsService } from '../../core/services/reviews.service';
 import { AiService } from '../../core/services/ai.service';
 import { NotificationsService } from '../../core/services/notifications.service';
+import { AppsService, AppSummary } from '../../core/services/apps.service';
 
 type Review = {
   id: string;
-  appName: string;
   user: string;
   rating: number;
   content: string;
@@ -21,20 +21,28 @@ type Review = {
   imports: [NgFor, NgIf, FormsModule],
   template: `
     <div class="card">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <h3 style="margin: 0">Reviews</h3>
-        <button (click)="simulateNew()" style="background: var(--accent); color: white; border: 0; padding: 6px 10px; border-radius: 8px">
-          Simular nuevo comentario
-        </button>
+      <div style="display:flex;align-items:center;gap:12px;justify-content:space-between;margin-bottom:12px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <h3 style="margin: 0">Reviews</h3>
+          <select [(ngModel)]="selectedAppId" (ngModelChange)="onAppChange($event)" style="background:var(--surface-2);color:var(--text);border:1px solid rgba(255,255,255,.1);padding:6px 8px;border-radius:8px">
+            <option [ngValue]="null">Seleccionar app</option>
+            <option *ngFor="let a of apps()" [ngValue]="a.id">{{ a.name }}</option>
+          </select>
+        </div>
+        <div>
+          <button (click)="simulateNew()" style="background: var(--accent); color: white; border: 0; padding: 6px 10px; border-radius: 8px">
+            Simular nuevo comentario
+          </button>
+        </div>
       </div>
       <div class="grid">
         <div class="card" *ngFor="let r of reviews()">
           <div style="display: flex; justify-content: space-between">
             <div>
-              <div style="font-weight: 600">{{ r.appName }}</div>
+              <div style="font-weight: 600">{{ selectedAppName() }}</div>
               <div style="opacity: 0.7; font-size: 12px">{{ r.user }} · ★ {{ r.rating }}</div>
             </div>
-            <button (click)="autoResponder(r.id)" style="background: var(--primary); color: white; border: 0; padding: 6px 10px; border-radius: 8px">
+            <button (click)="autoResponder(r.id)" [disabled]="r.replied" style="background: var(--primary); color: white; border: 0; padding: 6px 10px; border-radius: 8px;opacity:{{r.replied?0.6:1}}">
               Auto-responder IA
             </button>
           </div>
@@ -45,6 +53,11 @@ type Review = {
           </div>
         </div>
       </div>
+      <div *ngIf="nextCursor()" style="margin-top:12px;display:flex;justify-content:center">
+        <button (click)="loadMore()" style="background: var(--surface); color: var(--text); border: 1px solid rgba(255,255,255,.1); padding: 8px 12px; border-radius: 8px">
+          Cargar más
+        </button>
+      </div>
     </div>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -53,14 +66,84 @@ export class ReviewsComponent {
   private reviewsSvc = inject(ReviewsService);
   private ai = inject(AiService);
   private notifications = inject(NotificationsService);
+  private appsSvc = inject(AppsService);
 
   private state = signal<Review[]>([]);
+  readonly apps = signal<AppSummary[]>([]);
+  selectedAppId: string | null = null;
+  private cursor = signal<string | undefined>(undefined);
 
   constructor() {
-    this.reviewsSvc.list().subscribe((items) => {
+    this.appsSvc.listAll().subscribe((apps) => {
+      this.apps.set(apps);
+      if (apps.length > 0) {
+        this.selectedAppId = apps[0].id;
+        this.loadFirstPage();
+      }
+    });
+  }
+
+  readonly reviews = computed(() => this.state());
+  readonly selectedAppName = computed(() => {
+    const id = this.selectedAppId;
+    const app = this.apps().find((a) => a.id === id);
+    return app?.name ?? '';
+  });
+
+  autoResponder(id: string) {
+    const r = this.state().find((x) => x.id === id);
+    if (!r || r.replied) return;
+    const app = this.apps().find((a) => a.id === this.selectedAppId);
+    if (!app) return;
+    this.ai.generateReply({
+      appName: app.name,
+      user: r.user,
+      rating: r.rating,
+      content: r.content,
+      tone: 'friendly'
+    }).subscribe((reply) => {
+      this.reviewsSvc.reply(app.id, id, reply).subscribe({
+        next: () => {
+          const list = this.state().map((x) => (x.id === id ? { ...x, replied: true, reply } : x));
+          this.state.set(list);
+          this.notifications.add({
+            id: `n-${Date.now()}`,
+            message: `Auto-respuesta enviada en ${app.name} (${r.user})`,
+            date: new Date().toISOString()
+          });
+        },
+        error: () => {
+          this.notifications.add({
+            id: `n-${Date.now()}`,
+            message: `Error al guardar respuesta en ${app.name} (${r.user})`,
+            date: new Date().toISOString()
+          });
+        }
+      });
+    });
+  }
+
+  simulateNew() {
+    const app = this.apps()[0];
+    if (!app) return;
+    this.state.set([{ id: `tmp-${Date.now()}`, user: 'Nuevo Usuario', rating: 4, content: 'Muy útil, gracias.' }, ...this.state()]);
+    this.notifications.add({
+      id: `n-${Date.now()}`,
+      message: `Nueva review en ${app.name} (Nuevo Usuario)`,
+      date: new Date().toISOString()
+    });
+  }
+
+  onAppChange(appId: string | null) {
+    this.selectedAppId = appId;
+    this.loadFirstPage();
+  }
+
+  private loadFirstPage() {
+    if (!this.selectedAppId) return;
+    this.reviewsSvc.list(this.selectedAppId, undefined, 10).subscribe(({ items, nextCursor }) => {
       const mapped = items.map((i) => ({
         id: i.id,
-        appName: i.appName,
         user: i.user,
         rating: i.rating,
         content: i.content,
@@ -68,43 +151,27 @@ export class ReviewsComponent {
         reply: i.reply
       }));
       this.state.set(mapped);
+      this.cursor.set(nextCursor);
     });
   }
 
-  readonly reviews = computed(() => this.state());
+  readonly nextCursor = computed(() => this.cursor());
 
-  autoResponder(id: string) {
-    const r = this.state().find((x) => x.id === id);
-    if (!r) return;
-    this.ai.generateReply({ appName: r.appName, user: r.user, rating: r.rating, content: r.content }).subscribe((reply) => {
-      this.reviewsSvc.reply(id, reply).subscribe((updated) => {
-        if (!updated) return;
-        const list = this.state().map((x) => (x.id === id ? { ...x, replied: true, reply } : x));
-        this.state.set(list);
-        this.notifications.add({
-          id: `n-${Date.now()}`,
-          message: `Auto-respuesta enviada en ${r.appName} (${r.user})`,
-          date: new Date().toISOString()
-        });
-      });
-    });
-  }
-
-  simulateNew() {
-    const item = {
-      appId: '1',
-      appName: 'Paku Notes',
-      user: 'Nuevo Usuario',
-      rating: 4,
-      content: 'Muy útil, gracias.'
-    };
-    this.reviewsSvc.addReview(item).subscribe((r) => {
-      this.state.set([{ id: r.id, appName: r.appName, user: r.user, rating: r.rating, content: r.content }, ...this.state()]);
-      this.notifications.add({
-        id: `n-${Date.now()}`,
-        message: `Nueva review en ${r.appName} (${r.user})`,
-        date: new Date().toISOString()
-      });
+  loadMore() {
+    if (!this.selectedAppId) return;
+    const cursor = this.cursor();
+    if (!cursor) return;
+    this.reviewsSvc.list(this.selectedAppId, cursor, 10).subscribe(({ items, nextCursor }) => {
+      const mapped = items.map((i) => ({
+        id: i.id,
+        user: i.user,
+        rating: i.rating,
+        content: i.content,
+        replied: !!i.reply,
+        reply: i.reply
+      }));
+      this.state.set([...this.state(), ...mapped]);
+      this.cursor.set(nextCursor);
     });
   }
 }
