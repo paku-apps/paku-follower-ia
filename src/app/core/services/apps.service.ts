@@ -49,4 +49,27 @@ export class AppsService {
   getById(id: string): Observable<StoreApp> {
     return this.http.get<StoreApp>(`/apps/${id}`);
   }
+
+  loadOne(id: string): void {
+    if (!id) return;
+    this.getById(id).pipe(
+      map((a) => ({
+        id: a.id,
+        name: a.name,
+        category: a.category,
+        rating: a.rating,
+        downloads: a.downloads,
+        iconUrl: a.iconUrl,
+        developer: a.developer
+      }))
+    ).subscribe({
+      next: (summary) => {
+        if (!summary?.id) return;
+        const exists = this.state().some((s) => s.id === summary.id);
+        if (exists) return;
+        this.state.set([...this.state(), summary]);
+      },
+      error: () => void 0
+    });
+  }
 }

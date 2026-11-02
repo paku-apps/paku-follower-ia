@@ -11,6 +11,8 @@ export interface ReviewItem {
   rating: number;
   content: string;
   reply?: string;
+  lastModUserSeconds?: number;
+  lastModDevSeconds?: number;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -32,7 +34,9 @@ export class ReviewsService {
               user: r.authorName,
               rating: uc?.starRating ?? 0,
               content: uc?.text ?? '',
-              reply: dc?.text
+              reply: dc?.text,
+              lastModUserSeconds: uc?.lastModified?.seconds ? Number(uc.lastModified.seconds) : undefined,
+              lastModDevSeconds: dc?.lastModified?.seconds ? Number(dc.lastModified.seconds) : undefined
             };
           }) ?? [];
         const nextCursor = res.tokenPagination?.nextPageToken;
